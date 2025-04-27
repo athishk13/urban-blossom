@@ -1,43 +1,62 @@
-# inpainting/stable_diffusion_client.py
 import os
 import base64
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()                                #loading SD key from .env
+load_dotenv()                               
 API_KEY      = os.getenv("SD_API_KEY")
-API_URL      = "https://stablediffusionapi.com/api/v3/inpaint"
+ENDPOINT = "https://stablediffusionapi.com/api/v3/inpaint"
 
-def inpaint(init_image_path, mask_image_path, prompt, 
-            width=512, height=512, steps=30, guidance=7.5, strength=0.7):
-    # 1. Read & encode
-    init_b64 = base64.b64encode(Path(init_image_path).read_bytes()).decode()
-    mask_b64 = base64.b64encode(Path(mask_image_path).read_bytes()).decode()
+PROMPT   = ("A colorful, detailed urban mural painted realistically on a "
+            "concrete wall, vibrant colors, street art style.")
 
-    # 2. Build payload
+
+def encode_image_to_base64(path: Path) -> str:
+    """Load an image file and return a data-URI style base64 string."""
+    img_bytes = path.read_bytes()
+    b64 = base64.b64encode(img_bytes).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
+
+def inpaint(
+    image_path: Path,
+    mask_path:  Path,
+    prompt:     str,
+    out_path:   Path
+) -> Path:
+    """Call Stable Diffusion inpaint endpoint and write the returned image."""
     payload = {
-      "key": API_KEY,
-      "prompt": prompt,
-      "init_image": init_b64,
-      "mask_image": mask_b64,
-      "width": str(width),
-      "height": str(height),
-      "samples": "1",
-      "num_inference_steps": str(steps),
-      "guidance_scale": guidance,
-      "strength": strength,
-      "base64": "yes"
+        "key":    API_KEY,
+        "image":  encode_image_to_base64(image_path),
+        "mask":   encode_image_to_base64(mask_path),
+        "prompt": prompt,
     }
 
-    # 3. Call API
-    resp = requests.post(API_URL, json=payload)
+    resp = requests.post(ENDPOINT, json=payload)
     resp.raise_for_status()
     data = resp.json()
 
-    # 4. Decode & save
-    out_data = base64.b64decode(data["output"][0])
-    out_path = Path("images/outputs") / f"{Path(init_image_path).stem}_mural.png"
+    img_b64 = data["output"][0]["base64"]
+    img_bytes = base64.b64decode(img_b64)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(out_data)
-    return str(out_path)
+    out_path.write_bytes(img_bytes)
+    return out_path
+
+if __name__ == "__main__":
+    from detection.detect_graffiti import detect, create_mask
+
+    RAW_DIR   = Path("images/raw")
+    MASKS_DIR = Path("images/masks")
+    OUT_DIR   = Path("images/inpainted")
+
+    for img_path in RAW_DIR.glob("*.jpg"):
+        print(f"\n→ Processing {img_path.name}")
+
+        boxes     = detect(img_path)
+        mask_path = MASKS_DIR / f"{img_path.stem}_mask.png"
+        create_mask(img_path, boxes, mask_path)
+
+        out_file = OUT_DIR / f"{img_path.stem}_inpainted.png"
+        result   = inpaint(img_path, mask_path, PROMPT, out_file)
+        print(f"✔️  Inpainted image saved to {result}")
